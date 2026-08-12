@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
+from app.sms_service import send_alert_sms
 from app.video_processor import process_video
 
 app = FastAPI(title="Rhino Conservation API", version="0.1.0")
@@ -46,6 +47,12 @@ async def analyze_video(video: UploadFile = File(...), threshold: float = Form(0
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
+    sms_result = None
+
+    if result["alerts"]:
+        sms_result = send_alert_sms(video.filename, result["alerts"][0])
+        result["alerts"][0]["sms_sent"] = sms_result["sent"]
+
     return {
         "video_name": video.filename,
         "upload_id": upload_id,
@@ -53,4 +60,5 @@ async def analyze_video(video: UploadFile = File(...), threshold: float = Form(0
         "threshold": threshold,
         "processed_frames": result["processed_frames"],
         "alerts": result["alerts"],
+        "sms": sms_result,
     }
