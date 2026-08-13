@@ -1,0 +1,127 @@
+name: CI / CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/kifaru-backend
+
+jobs:
+  # ── 1. Verify the image builds (PRs) ─────────────────────────────────────────
+  # Catches what running `uvicorn` on a dev machine can miss — missing system
+  # libraries for opencv, unpinned deps that no longer resolve, and
+  # case-sensitive import paths that work on Windows but break on Linux.
+  build-check:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 2. Build & push image ────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & push Docker image
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.sha_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: meta
+        run: |
+          SHA_TAG=sha-${{ github.sha }}
+          echo "sha_tag=${SHA_TAG}" >> $GITHUB_OUTPUT
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.sha_tag }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 3. Deploy ────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The server has no GitHub credentials and this repo is private, so
+      # cloning there is not an option. Everything the app needs is baked into
+      # the image — the server only needs the compose file.
+      - name: Copy compose file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key:      ${{ secrets.SERVER_SSH_KEY }}
+          source:   docker-compose.yml
+          target:   kifaru/api
+
+      - uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key:      ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            export PATH="$HOME/.local/bin:$PATH"
+
+            cd "$HOME/kifaru/api"
+
+            export IMAGE_NAME="${{ secrets.DOCKER_USERNAME }}/kifaru-backend"
+            export IMAGE_TAG="${{ needs.build-and-push.outputs.image_tag }}"
+
+            # Runtime config lives on the server, not in the image — the SMS API
+            # key must never be baked into a layer.
+            export SMS_ENABLED="${{ secrets.SMS_ENABLED }}"
+            export SMS_API_URL="${{ secrets.SMS_API_URL }}"
+            export SMS_API_KEY="${{ secrets.SMS_API_KEY }}"
+            export SMS_RECIPIENTS="${{ secrets.SMS_RECIPIENTS }}"
+
+            docker compose up -d --no-deps --pull always kifaru-api
+
+            echo "Waiting for kifaru-api to be healthy..."
+            for i in $(seq 1 30); do
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' kifaru-api 2>/dev/null || echo "missing")
+              [ "$STATUS" = "healthy" ] && break
+              if [ $i -eq 30 ]; then
+                echo "Timed out waiting for kifaru-api"
+                docker logs --tail 50 kifaru-api || true
+                exit 1
+              fi
+              sleep 3
+            done
+
+            docker image prune -f
+
+            echo "kifaru-api is up"

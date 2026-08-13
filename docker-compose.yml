@@ -1,0 +1,28 @@
+services:
+  kifaru-api:
+    image: ${IMAGE_NAME:-kifaru-backend}:${IMAGE_TAG:-latest}
+    # nginx resolves this name via Docker's internal DNS (see proxy/conf.d/
+    # kifaru-api.conf) — it must stay exactly "kifaru-api".
+    container_name: kifaru-api
+    restart: unless-stopped
+    # No published ports: nginx is the only container exposed to the host, and
+    # it reaches this service over katisha-net.
+    expose:
+      - "7000"
+    environment:
+      SMS_ENABLED: ${SMS_ENABLED:-false}
+      SMS_API_URL: ${SMS_API_URL:-https://itecsms.rw/api/sendsms}
+      SMS_API_KEY: ${SMS_API_KEY:-}
+      SMS_RECIPIENTS: ${SMS_RECIPIENTS:-}
+    volumes:
+      # Uploaded videos and alert snapshots must outlive the container.
+      - kifaru-uploads:/app/uploads
+    networks:
+      - katisha-net
+
+volumes:
+  kifaru-uploads:
+
+networks:
+  katisha-net:
+    external: true
