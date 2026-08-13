@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
+from app.alert_store import read_alerts, save_alerts
 from app.sms_service import send_alert_sms
 from app.video_processor import process_video
 
@@ -13,6 +14,12 @@ UPLOAD_DIR = Path("uploads")
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.get("/alerts")
+def get_alerts():
+    alerts = list(reversed(read_alerts()))
+    return {"count": len(alerts), "alerts": alerts}
 
 
 @app.post("/videos/analyze")
@@ -53,12 +60,19 @@ async def analyze_video(video: UploadFile = File(...), threshold: float = Form(0
         sms_result = send_alert_sms(video.filename, result["alerts"][0])
         result["alerts"][0]["sms_sent"] = sms_result["sent"]
 
+    stored_alerts = save_alerts(
+        result["alerts"],
+        upload_id,
+        video.filename,
+        str(saved_path),
+    )
+
     return {
         "video_name": video.filename,
         "upload_id": upload_id,
         "saved_video": str(saved_path),
         "threshold": threshold,
         "processed_frames": result["processed_frames"],
-        "alerts": result["alerts"],
+        "alerts": stored_alerts,
         "sms": sms_result,
     }
