@@ -2,7 +2,7 @@ services:
   kifaru-api:
     image: ${IMAGE_NAME:-kifaru-backend}:${IMAGE_TAG:-latest}
     # nginx resolves this name via Docker's internal DNS (see proxy/conf.d/
-    # kifaru-api.conf) — it must stay exactly "kifaru-api".
+    # kifaru-api.conf) - it must stay exactly "kifaru-api".
     container_name: kifaru-api
     restart: unless-stopped
     # No published ports: nginx is the only container exposed to the host, and
@@ -10,7 +10,7 @@ services:
     expose:
       - "7000"
     environment:
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://kifaru.site,https://www.kifaru.site}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://kifaru.site,https://www.kifaru.site,http://localhost:5173,http://127.0.0.1:5173}
       SMS_ENABLED: ${SMS_ENABLED:-false}
       SMS_API_URL: ${SMS_API_URL:-https://itecsms.rw/api/sendsms}
       SMS_API_KEY: ${SMS_API_KEY:-}
