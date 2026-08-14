@@ -1,13 +1,37 @@
+import os
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.alert_store import read_alerts, save_alerts
 from app.sms_service import send_alert_sms
 from app.video_processor import process_video
 
+DEFAULT_CORS_ALLOW_ORIGINS = (
+    "http://localhost:5173,"
+    "http://127.0.0.1:5173,"
+    "http://localhost:3000,"
+    "http://127.0.0.1:3000,"
+    "https://kifaru.site,"
+    "https://www.kifaru.site"
+)
+
+
+def get_cors_allow_origins() -> list[str]:
+    raw_origins = os.getenv("CORS_ALLOW_ORIGINS", DEFAULT_CORS_ALLOW_ORIGINS)
+    return [origin.strip().rstrip("/") for origin in raw_origins.split(",") if origin.strip()]
+
+
 app = FastAPI(title="Rhino Conservation API", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_cors_allow_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 UPLOAD_DIR = Path("uploads")
 
 

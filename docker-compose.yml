@@ -10,6 +10,7 @@ services:
     expose:
       - "7000"
     environment:
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://kifaru.site,https://www.kifaru.site}
       SMS_ENABLED: ${SMS_ENABLED:-false}
       SMS_API_URL: ${SMS_API_URL:-https://itecsms.rw/api/sendsms}
       SMS_API_KEY: ${SMS_API_KEY:-}
