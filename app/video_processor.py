@@ -1,8 +1,24 @@
+import math
 from pathlib import Path
 
 from app import config
 from app.detector import get_detector
 from app.threat import ThreatMonitor
+
+
+def source_fps(raw: float) -> float:
+    """A frame rate worth trusting, or the 30fps assumption.
+
+    OpenCV reports 0 for containers carrying no rate in the header and NaN for
+    some malformed ones. NaN is *truthy*, so an `or 30` fallback lets it
+    through to round(), which raises ValueError and turns a bad upload into a
+    500. A negative or absurd rate is equally unusable: it yields a stride of 1
+    and analyses every frame of the clip, which is exactly the timeout the
+    sampling exists to avoid.
+    """
+    if not math.isfinite(raw) or raw <= 0 or raw > 1000:
+        return 30.0
+    return raw
 
 
 def frame_stride(fps: float) -> int:
@@ -26,7 +42,7 @@ def process_video(video_path: Path, threshold: float, alert_frames_folder: Path)
         raise ValueError("Video could not be opened")
 
     detector = get_detector()
-    fps = capture.get(cv2.CAP_PROP_FPS) or 30
+    fps = source_fps(capture.get(cv2.CAP_PROP_FPS))
     stride = frame_stride(fps)
 
     # Per-video, because track ids and distance histories from one clip mean
@@ -51,6 +67,10 @@ def process_video(video_path: Path, threshold: float, alert_frames_folder: Path)
                 continue
 
             analyzed_frames += 1
+            # Derived from the frame index rather than read back from the
+            # container. CAP_PROP_POS_MSEC lags the frame just decoded by one
+            # interval, so for constant-rate footage — which mp4 from drones and
+            # phones is — this is the exact value and that one is not.
             timestamp_seconds = round((processed_frames - 1) / fps, 2)
             detections = detector.predict(frame, processed_frames)
 

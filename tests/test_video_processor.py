@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -121,3 +123,72 @@ def test_each_video_is_assessed_independently(clip, tmp_path, monkeypatch):
     assert [alert["probability"] for alert in first["alerts"]] == [
         alert["probability"] for alert in second["alerts"]
     ]
+
+
+# ── Frame rate robustness ────────────────────────────────────────────────────
+
+
+def test_a_sane_frame_rate_is_used_as_is():
+    assert video_processor.source_fps(29.97) == pytest.approx(29.97)
+    assert video_processor.source_fps(10.0) == 10.0
+
+
+def test_a_nan_frame_rate_does_not_reach_round():
+    """OpenCV returns NaN for some malformed containers, and NaN is truthy —
+    an `or 30` fallback lets it through to round(), which raises and turns a
+    bad upload into a 500."""
+    assert video_processor.source_fps(float("nan")) == 30.0
+    video_processor.frame_stride(video_processor.source_fps(float("nan")))
+
+
+def test_a_missing_frame_rate_falls_back():
+    assert video_processor.source_fps(0.0) == 30.0
+    assert video_processor.source_fps(-5.0) == 30.0
+    assert video_processor.source_fps(float("inf")) == 30.0
+
+
+def test_an_absurd_frame_rate_falls_back():
+    """A huge rate yields a huge stride and only the first frame is analysed;
+    a rate near zero yields stride 1 and analyses all 9,000 frames of a clip."""
+    assert video_processor.source_fps(1e9) == 30.0
+
+
+def test_sampling_hits_the_configured_rate(monkeypatch):
+    """The property the stride exists to deliver, across common frame rates."""
+    monkeypatch.setattr(config, "FRAME_SAMPLE_FPS", 2.0)
+
+    for fps in (10.0, 15.0, 24.0, 30.0, 60.0):
+        stride = video_processor.frame_stride(fps)
+        effective = fps / stride
+        assert 1.5 <= effective <= 3.0, f"{fps}fps -> {effective}fps sampled"
+
+
+def test_the_first_frame_is_always_analysed_at_time_zero(clip, tmp_path, monkeypatch):
+    monkeypatch.setattr(video_processor, "get_detector", ApproachingPersonDetector)
+
+    result = video_processor.process_video(clip, config.DEFAULT_ALERT_THRESHOLD, tmp_path)
+
+    assert result["processed_frames"] == 30
+    assert result["analyzed_frames"] == 6      # frames 1, 6, 11, 16, 21, 26
+    assert result["alerts"][0]["timestamp_seconds"] >= 0.0
+
+
+def test_timestamps_advance_by_the_sampling_interval(clip, tmp_path, monkeypatch):
+    monkeypatch.setattr(video_processor, "get_detector", ApproachingPersonDetector)
+
+    result = video_processor.process_video(clip, 0.0, tmp_path)
+    stamps = [a["timestamp_seconds"] for a in result["alerts"]]
+    gaps = [round(b - a, 3) for a, b in zip(stamps, stamps[1:])]
+
+    # stride 5 at 10fps = one analysed frame every 0.5s
+    assert all(g == pytest.approx(0.5) for g in gaps), gaps
+
+
+def test_frame_number_matches_the_snapshot_written(clip, tmp_path, monkeypatch):
+    monkeypatch.setattr(video_processor, "get_detector", ApproachingPersonDetector)
+
+    result = video_processor.process_video(clip, 0.0, tmp_path)
+
+    for alert in result["alerts"]:
+        assert Path(alert["snapshot_path"]).name == f"frame_{alert['frame_number']:06d}.jpg"
+        assert Path(alert["snapshot_path"]).is_file()

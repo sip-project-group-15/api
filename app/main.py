@@ -1,11 +1,13 @@
 import os
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from app.alert_store import read_alerts, save_alerts
 from app import config
@@ -69,6 +71,31 @@ def get_alerts():
     return {"count": len(alerts), "alerts": alerts}
 
 
+# Both segments are matched against a strict pattern rather than sanitised.
+# An allowlist cannot be talked into resolving somewhere else, which is the
+# whole risk when a path segment reaches the filesystem.
+UPLOAD_ID = re.compile(r"[0-9a-f]{32}")
+FRAME_NAME = re.compile(r"frame_\d{6}\.jpg")
+
+
+@app.get("/uploads/{upload_id}/frames/{filename}")
+def get_alert_frame(upload_id: str, filename: str):
+    """Serve an alert's snapshot so the frontend can show the evidence.
+
+    The compose volume already keeps these files across restarts, but a volume
+    is persistence, not reachability — without this route `snapshot_path` is a
+    path the browser can do nothing with.
+    """
+    if not UPLOAD_ID.fullmatch(upload_id) or not FRAME_NAME.fullmatch(filename):
+        raise HTTPException(status_code=404, detail="No such frame")
+
+    path = UPLOAD_DIR / upload_id / "alert_frames" / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No such frame")
+
+    return FileResponse(path, media_type="image/jpeg")
+
+
 @app.post("/videos/analyze")
 async def analyze_video(
     video: UploadFile = File(...),
@@ -114,8 +141,12 @@ async def analyze_video(
     sms_result = None
 
     if result["alerts"]:
-        sms_result = send_alert_sms(video.filename, result["alerts"][0])
-        result["alerts"][0]["sms_sent"] = sms_result["sent"]
+        # One message for the whole clip. A text per alert would mean five for a
+        # single approach — same subject, seconds apart — which costs money and
+        # buries the signal. Every alert is covered, so every alert is flagged.
+        sms_result = send_alert_sms(video.filename, result["alerts"])
+        for alert in result["alerts"]:
+            alert["sms_sent"] = sms_result["sent"]
 
     stored_alerts = save_alerts(
         result["alerts"],

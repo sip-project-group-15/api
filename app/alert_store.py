@@ -6,6 +6,19 @@ from uuid import uuid4
 ALERTS_FILE = Path("uploads") / "alerts.json"
 
 
+def snapshot_url(upload_id: str, snapshot_path: str | None) -> str | None:
+    """The route a browser can fetch an alert's frame from.
+
+    The compose volume keeps these files alive across restarts, but persistence
+    is not reachability — without a route the frontend has a path it cannot do
+    anything with. See the /uploads endpoint in app/main.py.
+    """
+    if not snapshot_path:
+        return None
+
+    return f"/uploads/{upload_id}/frames/{Path(snapshot_path).name}"
+
+
 def read_alerts(alerts_file: Path = ALERTS_FILE) -> list[dict]:
     if not alerts_file.exists():
         return []
@@ -44,6 +57,11 @@ def save_alerts(
                 "video_name": video_name,
                 "saved_video": saved_video,
                 "created_at": created_at,
+                # snapshot_path is a path on the server's disk; the frontend
+                # needs something it can put in an <img src>. Built here rather
+                # than in the processor, which has no idea what an upload_id or
+                # a URL route is.
+                "snapshot_url": snapshot_url(upload_id, alert.get("snapshot_path")),
                 **alert,
             }
         )

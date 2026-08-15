@@ -161,6 +161,12 @@ SEVERITY_BANDS = ((0.75, "critical"), (0.5, "high"), (0.25, "medium"))
 # charging distance but standing still scores under 0.5 on its own.
 DEFAULT_ALERT_THRESHOLD = env_float("DEFAULT_ALERT_THRESHOLD", 0.45)
 
+# ── SMS ─────────────────────────────────────────────────────────────────────
+# One message covers a whole clip, so it has to stay inside a sane number of
+# GSM-7 segments (160 chars each). 480 is three; beyond that the remaining
+# alerts are counted rather than spelled out.
+SMS_MAX_CHARS = env_int("SMS_MAX_CHARS", 480)
+
 # ── Video ────────────────────────────────────────────────────────────────────
 # Analysing all 30fps is pointless and far too slow on a shared CPU: a 5-minute
 # clip would be 9,000 inferences, well past the 600s proxy timeout. Poaching
