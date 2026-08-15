@@ -36,6 +36,32 @@ Ground-level, so a model trained only on this will not generalise to top-down
 drone frames — different silhouette, scale and background. It is a starting
 point for the `rhino` class, not a finished training set.
 
+### COCO val2017
+Ground-level people and vehicles — the half the aerial sources cannot supply.
+
+| | |
+|---|---|
+| People / vehicles | **yes** — ground level |
+| Rhinos | no |
+| Size | 816 MB images + 241 MB annotations |
+| Fetch | `python training/fetch_coco.py` |
+| Measured yield | **2,951 images — 10,777 person, 2,982 vehicle** |
+
+`val2017` rather than `train2017`: 816 MB instead of 19 GB, still far more
+instances than any cap takes, and genuinely unseen — the YOLO base weights were
+pretrained on train2017, so none of this was in that.
+
+Mapped `person→person` and `car`/`truck`/`bus`/`motorcycle→vehicle`. Only leaf
+categories, so nothing is boxed twice. Crowd regions (`iscrowd`) are dropped —
+one box over many overlapping people would train a single enormous `person`.
+
+> **Why this is not optional.** The first trained model learned `rhino` from
+> ground photos and `person`/`vehicle` from aerial drone footage. Measured on
+> the real weights: rhino 95% detected at ground level, person/vehicle 92% of
+> aerial images — but **nothing at all** for person/vehicle at ground level
+> (max score 0.016). No single viewpoint saw all three classes, so it produced
+> zero alerts in either domain.
+
 ### VisDrone
 Real aerial imagery, 10 classes: `pedestrian, people, bicycle, car, van, truck,
 tricycle, awning-tricycle, bus, motor`.

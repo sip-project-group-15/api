@@ -25,6 +25,12 @@ respectably.
 *Background ratio* caps images with no labels at all. A few teach the model
 what an empty scene looks like and suppress false positives; mostly-empty
 training sets teach it that predicting nothing is usually right.
+
+The instance cap applies **per source, not globally**, and that is deliberate.
+`person` needs to be learned from the air *and* from the ground — the first
+trained model saw people only from VisDrone and so could not recognise one at
+ground level at all. A global cap would let whichever source is processed first
+consume the entire budget and starve the viewpoint that comes after it.
 """
 
 import argparse
@@ -327,7 +333,7 @@ def main() -> None:
         "--cap",
         type=int,
         default=2000,
-        help="max training instances per class (default 2000)",
+        help="max training instances per class, PER SOURCE (default 2000)",
     )
     parser.add_argument(
         "--background-ratio",
