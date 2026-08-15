@@ -30,13 +30,6 @@ def get_cors_allow_origins() -> list[str]:
 
 logging.basicConfig(level=logging.INFO)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=get_cors_allow_origins(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 UPLOAD_DIR = Path("uploads")
 
 
@@ -50,10 +43,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Rhino Conservation API", version="0.1.0", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_cors_allow_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    """Reports which backend is live, so a deploy is verifiable without an upload."""
+    detector = get_detector()
+    return {
+        "status": "ok",
+        "detector": detector.name,
+        "model_loaded": not detector.is_mock,
+    }
 
 
 @app.get("/alerts")
@@ -63,7 +70,17 @@ def get_alerts():
 
 
 @app.post("/videos/analyze")
-async def analyze_video(video: UploadFile = File(...), threshold: float = Form(0.6)):
+async def analyze_video(
+    video: UploadFile = File(...),
+    threshold: float = Form(config.DEFAULT_ALERT_THRESHOLD),
+):
+    """Analyse an uploaded clip frame by frame.
+
+    `threshold` gates the composite threat score from app/threat.py — how close
+    a person is to a rhino, whether they are closing, and what else is in
+    frame — not a bare detection confidence. Lower it to see more marginal
+    activity; raise it for high-confidence alerts only.
+    """
     if not video.filename:
         raise HTTPException(status_code=400, detail="Video file is required")
 
