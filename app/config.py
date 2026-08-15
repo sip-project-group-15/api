@@ -162,10 +162,16 @@ SEVERITY_BANDS = ((0.75, "critical"), (0.5, "high"), (0.25, "medium"))
 DEFAULT_ALERT_THRESHOLD = env_float("DEFAULT_ALERT_THRESHOLD", 0.45)
 
 # ── SMS ─────────────────────────────────────────────────────────────────────
-# One message covers a whole clip, so it has to stay inside a sane number of
-# GSM-7 segments (160 chars each). 480 is three; beyond that the remaining
-# alerts are counted rather than spelled out.
-SMS_MAX_CHARS = env_int("SMS_MAX_CHARS", 480)
+# One message covers a whole clip, capped at ONE GSM-7 segment.
+#
+# Past 160 septets an SMS becomes a concatenated message, which needs a user
+# data header and septet padding to stay bit-aligned. Our provider gets that
+# wrong: multi-segment messages arrive as GSM-7 mojibake — Greek letters and a
+# trailing run of '@' — with no error on the sending side. Alerts that do not
+# fit are counted instead; the dashboard has the detail.
+#
+# Raise this only after verifying a >160 septet message actually arrives intact.
+SMS_MAX_SEPTETS = env_int("SMS_MAX_SEPTETS", 160)
 
 # ── Video ────────────────────────────────────────────────────────────────────
 # Analysing all 30fps is pointless and far too slow on a shared CPU: a 5-minute

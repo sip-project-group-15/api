@@ -25,6 +25,44 @@ def get_recipients() -> list[str]:
     return [recipient.strip() for recipient in raw_recipients.split(",") if recipient.strip()]
 
 
+# GSM 03.38, the 7-bit alphabet an SMS is packed into. Anything outside this
+# set costs extra or breaks: the characters below are one septet each, the
+# extension set is two septets behind an ESC byte, and anything else forces the
+# whole message to UCS-2, which drops the limit from 160 characters to 70.
+GSM7_BASIC = frozenset(
+    "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?"
+    "¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
+)
+GSM7_EXTENDED = frozenset("^{}\\[~]|€")
+
+# Characters that read naturally but are not in the basic set.
+SUBSTITUTIONS = {
+    "~": "",       # was used for "approximately"; needs an ESC byte
+    "—": "-", "–": "-", "·": "-", "…": "...",
+    "’": "'", "‘": "'", "“": '"', "”": '"',
+}
+
+
+def septets(text: str) -> int:
+    """Length in septets, which is what the 160 limit actually counts."""
+    return sum(2 if character in GSM7_EXTENDED else 1 for character in text)
+
+
+def to_gsm7(text: str) -> str:
+    """Reduce text to the basic alphabet, dropping anything that survives.
+
+    Escaped and non-GSM characters are the difference between a message that
+    arrives and one that arrives as mojibake, and neither failure is visible
+    from this side — the provider accepts the request either way.
+    """
+    out = []
+    for character in text:
+        replacement = SUBSTITUTIONS.get(character, character)
+        out.extend(c for c in replacement if c in GSM7_BASIC)
+
+    return "".join(out)
+
+
 def clock(seconds: float) -> str:
     """Seconds into m:ss, so a ranger can scrub straight to the moment."""
     total = int(seconds)
@@ -38,23 +76,26 @@ def summarise(alert: dict) -> str:
     written for a screen and is far too long once several are stacked into a
     160-character segment.
     """
-    parts = [clock(alert.get("timestamp_seconds", 0)), str(alert.get("severity", "")).upper()]
+    severity = {"critical": "CRIT", "high": "HIGH", "medium": "MED"}.get(
+        str(alert.get("severity", "")).lower(), "ALERT"
+    )
+    parts = [clock(alert.get("timestamp_seconds", 0)), severity]
 
     separation = alert.get("separation_body_lengths")
     if separation is None:
-        parts.append(f"{alert.get('label_seen', 'threat')}, no rhino in view")
+        parts.append("no rhino in view")
     else:
         metres = alert.get("separation_metres_estimate")
-        parts.append(f"{separation:.1f} body-lengths (~{metres:.0f}m)")
+        parts.append(f"{separation:.1f} lengths {metres:.0f}m")
 
     rate = alert.get("closing_rate")
     if rate and rate > 0:
-        parts.append(f"closing {rate:.2f}/s")
+        parts.append("closing")
 
     for factor in alert.get("context_factors") or []:
         parts.append(factor)
 
-    return " ".join(parts[:2]) + " " + ", ".join(parts[2:])
+    return " ".join(parts)
 
 
 def build_alert_message(video_name: str, alerts: list[dict]) -> str:
@@ -64,25 +105,29 @@ def build_alert_message(video_name: str, alerts: list[dict]) -> str:
     subject, seconds apart — which costs money and buries the signal. One
     message, ordered by time, reads as the event it actually is.
 
-    Long clips can raise dozens of alerts, so the body is capped at
-    SMS_MAX_CHARS and the remainder is counted rather than sent. A truncated
-    message that arrives beats a ten-segment one that does not.
+    The body is capped at SMS_MAX_SEPTETS and the remainder counted rather than
+    sent. That default is one segment, deliberately: a message longer than 160
+    septets is split into a concatenated SMS, which needs a header and a bit of
+    septet padding to stay aligned. Get that wrong and the whole thing arrives
+    as GSM-7 mojibake — Greek letters and a run of '@' — which is exactly what
+    this provider does with multi-segment messages. One segment always
+    survives; the dashboard has the rest.
     """
     if not alerts:
-        return f"Kifaru: no poaching alerts in {video_name}."
+        return to_gsm7(f"Kifaru: no poaching alerts in {video_name}")
 
     plural = "s" if len(alerts) > 1 else ""
-    header = f"Kifaru: {len(alerts)} alert{plural} in {video_name[:40]}"
+    header = to_gsm7(f"Kifaru: {len(alerts)} alert{plural} in {video_name[:24]}")
 
     lines = []
     for index, alert in enumerate(alerts, start=1):
-        line = f"{index}. {summarise(alert)}"
-        candidate = "\n".join([header, *lines, line])
+        line = to_gsm7(f"{index}. {summarise(alert)}")
         remaining = len(alerts) - index
 
         # Leave room for the "+N more" tail before committing to this line.
         tail = f"\n+{remaining} more" if remaining else ""
-        if len(candidate) + len(tail) > config.SMS_MAX_CHARS:
+        candidate = "\n".join([header, *lines, line]) + tail
+        if septets(candidate) > config.SMS_MAX_SEPTETS:
             return "\n".join([header, *lines, f"+{len(alerts) - index + 1} more"])
 
         lines.append(line)

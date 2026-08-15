@@ -36,11 +36,11 @@ def test_seconds_become_a_clock_a_ranger_can_scrub_to():
 def test_a_line_carries_time_severity_distance_and_speed():
     line = sms_service.summarise(alert())
 
-    assert "1:30".replace("1:30", "0:01") in line  # 1.5s -> 0:01
-    assert "CRITICAL" in line
-    assert "1.8 body-lengths" in line
-    assert "~7m" in line
-    assert "closing 0.55/s" in line
+    assert "0:01" in line
+    assert "CRIT" in line
+    assert "1.8 lengths" in line
+    assert "7m" in line
+    assert "closing" in line
 
 
 def test_a_stationary_threat_reports_no_closing_speed():
@@ -104,7 +104,7 @@ def test_alerts_keep_their_order():
 
 def test_a_long_clip_is_truncated_rather_than_sent_as_ten_segments(monkeypatch):
     """A truncated message that arrives beats a huge one that does not."""
-    monkeypatch.setattr(config, "SMS_MAX_CHARS", 300)
+    monkeypatch.setattr(config, "SMS_MAX_SEPTETS", 300)
 
     message = sms_service.build_alert_message("clip.mp4", [alert()] * 40)
 
@@ -113,7 +113,7 @@ def test_a_long_clip_is_truncated_rather_than_sent_as_ten_segments(monkeypatch):
 
 
 def test_truncation_counts_every_alert_it_left_out(monkeypatch):
-    monkeypatch.setattr(config, "SMS_MAX_CHARS", 300)
+    monkeypatch.setattr(config, "SMS_MAX_SEPTETS", 300)
 
     message = sms_service.build_alert_message("clip.mp4", [alert()] * 40)
     listed = sum(1 for line in message.splitlines() if line[:1].isdigit())
@@ -122,7 +122,7 @@ def test_truncation_counts_every_alert_it_left_out(monkeypatch):
     assert listed + dropped == 40
 
 
-def test_a_realistic_clip_fits_in_two_segments():
+def test_a_realistic_clip_fits_in_one_segment():
     """The whole point of the compact line format."""
     alerts = [
         alert(seconds=1.0, severity="high", separation=2.09, metres=7.7, closing=0.542),
@@ -134,14 +134,13 @@ def test_a_realistic_clip_fits_in_two_segments():
 
     message = sms_service.build_alert_message("approach.mp4", alerts)
 
-    assert len(message) <= 320
-    assert "+" not in message  # nothing dropped
+    assert sms_service.septets(message) <= 160
 
 
 def test_an_overlong_filename_cannot_crowd_out_the_alerts():
     message = sms_service.build_alert_message("a" * 200 + ".mp4", [alert()])
 
-    assert len(message) <= config.SMS_MAX_CHARS
+    assert sms_service.septets(message) <= config.SMS_MAX_SEPTETS
     assert "1. " in message
 
 
@@ -195,3 +194,50 @@ def test_the_provider_receives_one_message_for_all_alerts(monkeypatch):
     body = json.loads(sent[0].data)
     assert "3 alerts" in body["message"]
     assert body["recipients"] == ["250780000000"]
+
+
+# ── GSM-7 encoding ───────────────────────────────────────────────────────────
+# Past 160 septets an SMS is split into a concatenated message, which the
+# provider mis-assembles into GSM-7 mojibake with no error on the sending side.
+# These are the tests that would have caught that before it reached a handset.
+
+
+def test_every_message_fits_one_segment():
+    """A concatenated SMS is what produced the mojibake."""
+    for count in (1, 2, 5, 20, 200):
+        message = sms_service.build_alert_message("approach.mp4", [alert()] * count)
+        assert sms_service.septets(message) <= 160, f"{count} alerts -> {septets(message)}"
+
+
+def test_every_message_is_pure_basic_gsm7():
+    """An escaped character costs two septets and is mangled by this provider."""
+    for count in (0, 1, 5, 40):
+        message = sms_service.build_alert_message("clip.mp4", [alert()] * count)
+        outside = sorted(set(message) - sms_service.GSM7_BASIC)
+        assert not outside, f"{count} alerts -> {outside}"
+
+
+def test_the_tilde_that_caused_it_is_gone():
+    """"~7m" needed a GSM-7 escape; it is now written plainly."""
+    assert "~" not in sms_service.summarise(alert())
+
+
+def test_septets_counts_escapes_as_two():
+    assert sms_service.septets("abc") == 3
+    assert sms_service.septets("a~c") == 4
+    assert sms_service.septets("[]") == 4
+
+
+def test_non_gsm7_characters_are_replaced_not_passed_through():
+    """A single one of these flips the whole message to UCS-2, halving the limit."""
+    assert sms_service.to_gsm7("2.4 lengths (~9m)") == "2.4 lengths (9m)"
+    assert sms_service.to_gsm7("closing \u2014 fast") == "closing - fast"
+    assert sms_service.to_gsm7("caf\u00e9 \u4f60\u597d") == "caf\u00e9 "
+
+
+def test_an_unexpected_filename_cannot_break_the_encoding():
+    """Uploads are user-named, so the filename reaches the SMS unfiltered."""
+    message = sms_service.build_alert_message("\u5075\u5bdf\u673a-\ud83e\udd8f.mp4", [alert()])
+
+    assert not set(message) - sms_service.GSM7_BASIC
+    assert sms_service.septets(message) <= 160
