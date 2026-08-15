@@ -1,14 +1,35 @@
 from pathlib import Path
 
+from app import config
+from app.detector import get_detector
 
-def mock_predict(frame, frame_number: int) -> float:
-    if frame_number == 1 or frame_number % 45 == 0:
-        return 0.85
 
-    if frame_number % 20 == 0:
-        return 0.65
+def frame_stride(fps: float) -> int:
+    """How many frames to skip between inferences.
 
-    return 0.25
+    Sampling is what keeps analysis inside the proxy's timeout: at 30fps a
+    5-minute clip is 9,000 frames, but ~2 inferences per second covers the same
+    footage in a few hundred.
+    """
+    if config.FRAME_SAMPLE_FPS <= 0:
+        return 1
+    return max(1, round(fps / config.FRAME_SAMPLE_FPS))
+
+
+def assess(detections: list[dict]) -> tuple[float, str | None]:
+    """Turn per-frame detections into an alert probability and severity.
+
+    The rule lives here rather than in the model so it stays explainable: a
+    ranger can be told "a person was seen near a rhino", which is more
+    actionable than a bare confidence score.
+    """
+    threats = [d for d in detections if d["label"] in config.THREAT_CLASSES]
+    if not threats:
+        return 0.0, None
+
+    probability = max(d["confidence"] for d in threats)
+    assets_present = any(d["label"] in config.ASSET_CLASSES for d in detections)
+    return probability, "high" if assets_present else "medium"
 
 
 def process_video(video_path: Path, threshold: float, alert_frames_folder: Path) -> dict:
@@ -19,8 +40,12 @@ def process_video(video_path: Path, threshold: float, alert_frames_folder: Path)
     if not capture.isOpened():
         raise ValueError("Video could not be opened")
 
+    detector = get_detector()
     fps = capture.get(cv2.CAP_PROP_FPS) or 30
+    stride = frame_stride(fps)
+
     processed_frames = 0
+    analyzed_frames = 0
     alerts = []
 
     try:
@@ -31,9 +56,16 @@ def process_video(video_path: Path, threshold: float, alert_frames_folder: Path)
                 break
 
             processed_frames += 1
-            probability = mock_predict(frame, processed_frames)
 
-            if probability >= threshold:
+            # Frame 1 is always analysed, then every stride-th frame after it.
+            if (processed_frames - 1) % stride:
+                continue
+
+            analyzed_frames += 1
+            detections = detector.predict(frame, processed_frames)
+            probability, severity = assess(detections)
+
+            if probability >= threshold and severity is not None:
                 timestamp_seconds = round((processed_frames - 1) / fps, 2)
                 snapshot_path = alert_frames_folder / f"frame_{processed_frames:06d}.jpg"
                 cv2.imwrite(str(snapshot_path), frame)
@@ -43,6 +75,8 @@ def process_video(video_path: Path, threshold: float, alert_frames_folder: Path)
                         "timestamp_seconds": timestamp_seconds,
                         "probability": probability,
                         "label": "possible_poaching",
+                        "severity": severity,
+                        "detections": detections,
                         "location": None,
                         "sms_sent": False,
                         "snapshot_path": str(snapshot_path),
@@ -52,4 +86,10 @@ def process_video(video_path: Path, threshold: float, alert_frames_folder: Path)
     finally:
         capture.release()
 
-    return {"processed_frames": processed_frames, "alerts": alerts}
+    return {
+        "processed_frames": processed_frames,
+        "analyzed_frames": analyzed_frames,
+        "frame_stride": stride,
+        "detector": detector.name,
+        "alerts": alerts,
+    }

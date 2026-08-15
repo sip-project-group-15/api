@@ -1,0 +1,10 @@
+# Training-only dependencies. Deliberately NOT installed into the API image —
+# ultralytics pulls PyTorch (~2GB with CUDA wheels), and the serving container
+# only needs onnxruntime.
+#
+# Colab already provides a CUDA torch build, so install just this file there.
+ultralytics==8.4.118
+onnx==1.17.0
+onnxslim==0.1.48
+onnxruntime==1.20.1
+PyYAML==6.0.3

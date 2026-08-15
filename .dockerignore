@@ -9,3 +9,10 @@ __pycache__/
 .ruff_cache/
 README.md
 docker-compose.yml
+
+# Training is a separate concern from serving — notebooks, datasets and
+# PyTorch checkpoints must never enter the runtime image.
+training/
+datasets/
+*.pt
+*.ipynb

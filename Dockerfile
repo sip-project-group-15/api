@@ -17,6 +17,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
+# Weights, when present. The image stays valid without them — the detector
+# falls back to the mock — so the API is deployable before training finishes.
+COPY models ./models
+
 # Uploads are written at runtime; owned by the app user so the drop below works.
 RUN useradd --create-home --uid 10001 kifaru \
     && mkdir -p /app/uploads \

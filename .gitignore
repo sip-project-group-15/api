@@ -4,3 +4,13 @@ __pycache__/
 *.py[cod]
 .env
 .pytest_cache/
+
+# Training data and run artifacts. Datasets are thousands of images and GitHub
+# hard-rejects files over 100MB — these belong in Drive, not in git.
+datasets/
+training/runs/
+*.pt
+
+# Exported weights are the exception: models/best.onnx ships in the image and
+# must be committed.
+!models/*.onnx
