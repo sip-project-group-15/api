@@ -2,6 +2,7 @@ from pathlib import Path
 
 from app import config
 from app.detector import get_detector
+from app.threat import ThreatMonitor
 
 
 def frame_stride(fps: float) -> int:
@@ -16,22 +17,6 @@ def frame_stride(fps: float) -> int:
     return max(1, round(fps / config.FRAME_SAMPLE_FPS))
 
 
-def assess(detections: list[dict]) -> tuple[float, str | None]:
-    """Turn per-frame detections into an alert probability and severity.
-
-    The rule lives here rather than in the model so it stays explainable: a
-    ranger can be told "a person was seen near a rhino", which is more
-    actionable than a bare confidence score.
-    """
-    threats = [d for d in detections if d["label"] in config.THREAT_CLASSES]
-    if not threats:
-        return 0.0, None
-
-    probability = max(d["confidence"] for d in threats)
-    assets_present = any(d["label"] in config.ASSET_CLASSES for d in detections)
-    return probability, "high" if assets_present else "medium"
-
-
 def process_video(video_path: Path, threshold: float, alert_frames_folder: Path) -> dict:
     import cv2
 
@@ -43,6 +28,10 @@ def process_video(video_path: Path, threshold: float, alert_frames_folder: Path)
     detector = get_detector()
     fps = capture.get(cv2.CAP_PROP_FPS) or 30
     stride = frame_stride(fps)
+
+    # Per-video, because track ids and distance histories from one clip mean
+    # nothing in the next.
+    monitor = ThreatMonitor()
 
     processed_frames = 0
     analyzed_frames = 0
@@ -62,27 +51,42 @@ def process_video(video_path: Path, threshold: float, alert_frames_folder: Path)
                 continue
 
             analyzed_frames += 1
+            timestamp_seconds = round((processed_frames - 1) / fps, 2)
             detections = detector.predict(frame, processed_frames)
-            probability, severity = assess(detections)
 
-            if probability >= threshold and severity is not None:
-                timestamp_seconds = round((processed_frames - 1) / fps, 2)
-                snapshot_path = alert_frames_folder / f"frame_{processed_frames:06d}.jpg"
-                cv2.imwrite(str(snapshot_path), frame)
-                alerts.append(
-                    {
-                        "frame_number": processed_frames,
-                        "timestamp_seconds": timestamp_seconds,
-                        "probability": probability,
-                        "label": "possible_poaching",
-                        "severity": severity,
-                        "detections": detections,
-                        "location": None,
-                        "sms_sent": False,
-                        "snapshot_path": str(snapshot_path),
-                        "message": "Possible poaching activity detected",
-                    }
-                )
+            # The monitor is fed every analysed frame, not only alerting ones:
+            # it is building the tracks and distance histories that make
+            # "approaching" measurable, and a gap in that record is a lost
+            # trend.
+            assessment = monitor.update(detections, timestamp_seconds)
+
+            if assessment is None or assessment["score"] < threshold:
+                continue
+
+            snapshot_path = alert_frames_folder / f"frame_{processed_frames:06d}.jpg"
+            cv2.imwrite(str(snapshot_path), frame)
+            alerts.append(
+                {
+                    "frame_number": processed_frames,
+                    "timestamp_seconds": timestamp_seconds,
+                    # Kept under the old key so existing consumers and the SMS
+                    # template keep working, but this is now the composite
+                    # threat score, not a bare detection confidence — that is
+                    # reported separately as detection_confidence.
+                    "probability": assessment["score"],
+                    "label": "possible_poaching",
+                    "detections": detections,
+                    "location": None,
+                    "sms_sent": False,
+                    "snapshot_path": str(snapshot_path),
+                    "message": assessment["reason"],
+                    **{
+                        key: value
+                        for key, value in assessment.items()
+                        if key not in {"score", "label", "reason"}
+                    },
+                }
+            )
     finally:
         capture.release()
 
