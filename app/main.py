@@ -78,13 +78,18 @@ UPLOAD_ID = re.compile(r"[0-9a-f]{32}")
 FRAME_NAME = re.compile(r"frame_\d{6}\.jpg")
 
 
-@app.get("/uploads/{upload_id}/frames/{filename}")
+@app.get("/uploads/{upload_id}/alert_frames/{filename}")
 def get_alert_frame(upload_id: str, filename: str):
     """Serve an alert's snapshot so the frontend can show the evidence.
 
     The compose volume already keeps these files across restarts, but a volume
     is persistence, not reachability — without this route `snapshot_path` is a
     path the browser can do nothing with.
+
+    The route deliberately mirrors `snapshot_path` exactly, because the UI
+    builds its image src by joining the API base to that value. Prefer the
+    `snapshot_url` field over rebuilding the path client-side: it lets this
+    layout change later without breaking the frontend.
     """
     if not UPLOAD_ID.fullmatch(upload_id) or not FRAME_NAME.fullmatch(filename):
         raise HTTPException(status_code=404, detail="No such frame")

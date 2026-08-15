@@ -62,7 +62,7 @@ from app.alert_store import snapshot_url
 def test_snapshot_url_is_a_fetchable_route():
     url = snapshot_url("a" * 32, "uploads/aaa/alert_frames/frame_000016.jpg")
 
-    assert url == f"/uploads/{'a' * 32}/frames/frame_000016.jpg"
+    assert url == f"/uploads/{'a' * 32}/alert_frames/frame_000016.jpg"
 
 
 def test_snapshot_url_is_none_without_a_snapshot():
@@ -78,7 +78,7 @@ def test_a_snapshot_can_be_fetched(tmp_path, monkeypatch):
     (frames / "frame_000016.jpg").write_bytes(b"\xff\xd8\xff\xe0jpegbytes")
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
 
-    response = client.get(f"/uploads/{upload_id}/frames/frame_000016.jpg")
+    response = client.get(f"/uploads/{upload_id}/alert_frames/frame_000016.jpg")
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/jpeg"
@@ -90,7 +90,7 @@ def test_a_missing_snapshot_is_404(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
 
     upload_id = "0123456789abcdef0123456789abcdef"
-    assert client.get(f"/uploads/{upload_id}/frames/frame_000001.jpg").status_code == 404
+    assert client.get(f"/uploads/{upload_id}/alert_frames/frame_000001.jpg").status_code == 404
 
 
 def test_path_traversal_cannot_escape_the_uploads_directory(tmp_path, monkeypatch):
@@ -102,6 +102,6 @@ def test_path_traversal_cannot_escape_the_uploads_directory(tmp_path, monkeypatc
 
     upload_id = "0123456789abcdef0123456789abcdef"
     for attack in ("../../secret.txt", "..%2f..%2fsecret.txt", "frame_000001.jpg.txt"):
-        assert client.get(f"/uploads/{upload_id}/frames/{attack}").status_code == 404
+        assert client.get(f"/uploads/{upload_id}/alert_frames/{attack}").status_code == 404
     for bad_id in ("../..", "NOTHEX" + "0" * 26, "0" * 31):
-        assert client.get(f"/uploads/{bad_id}/frames/frame_000001.jpg").status_code == 404
+        assert client.get(f"/uploads/{bad_id}/alert_frames/frame_000001.jpg").status_code == 404

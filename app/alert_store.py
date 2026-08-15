@@ -16,7 +16,7 @@ def snapshot_url(upload_id: str, snapshot_path: str | None) -> str | None:
     if not snapshot_path:
         return None
 
-    return f"/uploads/{upload_id}/frames/{Path(snapshot_path).name}"
+    return f"/uploads/{upload_id}/alert_frames/{Path(snapshot_path).name}"
 
 
 def read_alerts(alerts_file: Path = ALERTS_FILE) -> list[dict]:
