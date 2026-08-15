@@ -21,3 +21,6 @@ datasets/
 # rhinos and are never what the server should load, so keep them out of the
 # image rather than shipping ~10MB of dead weight beside the real model.
 models/baseline-*.onnx
+
+# Sample media is for local testing only — it must not bloat the runtime image.
+samples/
