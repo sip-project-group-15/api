@@ -15,9 +15,14 @@ from app.detector import get_detector
 from app.sms_service import send_alert_sms
 from app.video_processor import process_video
 
+# 5173 is the Vite dev server and 4173 is `vite preview`, which is how a
+# production bundle gets checked locally — testing the real build against a
+# local API fails at the browser without it.
 DEFAULT_CORS_ALLOW_ORIGINS = (
     "http://localhost:5173,"
     "http://127.0.0.1:5173,"
+    "http://localhost:4173,"
+    "http://127.0.0.1:4173,"
     "http://localhost:3000,"
     "http://127.0.0.1:3000,"
     "https://kifaru.site,"
