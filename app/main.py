@@ -1,17 +1,42 @@
+import os
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
+from app.alert_store import read_alerts, save_alerts
 from app import config
 from app.detector import get_detector
 from app.sms_service import send_alert_sms
 from app.video_processor import process_video
 
+DEFAULT_CORS_ALLOW_ORIGINS = (
+    "http://localhost:5173,"
+    "http://127.0.0.1:5173,"
+    "http://localhost:3000,"
+    "http://127.0.0.1:3000,"
+    "https://kifaru.site,"
+    "https://www.kifaru.site"
+)
+
+
+def get_cors_allow_origins() -> list[str]:
+    raw_origins = os.getenv("CORS_ALLOW_ORIGINS", DEFAULT_CORS_ALLOW_ORIGINS)
+    return [origin.strip().rstrip("/") for origin in raw_origins.split(",") if origin.strip()]
+
+
 logging.basicConfig(level=logging.INFO)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_cors_allow_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 UPLOAD_DIR = Path("uploads")
 
 
@@ -28,15 +53,13 @@ app = FastAPI(title="Rhino Conservation API", version="0.1.0", lifespan=lifespan
 
 @app.get("/health")
 def health_check():
-    detector = get_detector()
-    return {
-        "status": "ok",
-        # Exposed so a deploy can be verified without uploading a video: if this
-        # says "mock", the weights did not make it into the image.
-        "detector": detector.name,
-        "model_loaded": not detector.is_mock,
-        "model_path": str(config.MODEL_PATH),
-    }
+    return {"status": "ok"}
+
+
+@app.get("/alerts")
+def get_alerts():
+    alerts = list(reversed(read_alerts()))
+    return {"count": len(alerts), "alerts": alerts}
 
 
 @app.post("/videos/analyze")
@@ -77,6 +100,13 @@ async def analyze_video(video: UploadFile = File(...), threshold: float = Form(0
         sms_result = send_alert_sms(video.filename, result["alerts"][0])
         result["alerts"][0]["sms_sent"] = sms_result["sent"]
 
+    stored_alerts = save_alerts(
+        result["alerts"],
+        upload_id,
+        video.filename,
+        str(saved_path),
+    )
+
     return {
         "video_name": video.filename,
         "upload_id": upload_id,
@@ -86,6 +116,6 @@ async def analyze_video(video: UploadFile = File(...), threshold: float = Form(0
         "analyzed_frames": result["analyzed_frames"],
         "frame_stride": result["frame_stride"],
         "detector": result["detector"],
-        "alerts": result["alerts"],
+        "alerts": stored_alerts,
         "sms": sms_result,
     }
