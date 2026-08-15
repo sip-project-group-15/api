@@ -272,20 +272,46 @@ def report(totals: dict[str, Counter], names: dict[int, str]) -> None:
             flag = "  <-- no examples" if not n else ""
             print(f"  {name:<10} {n:>7}  ({share:>5.1f}%){flag}")
 
+    from app import config
+
     train = totals["train"]
-    present = [train.get(class_id, 0) for class_id in names if train.get(class_id, 0)]
-    missing = [name for class_id, name in names.items() if not train.get(class_id, 0)]
+    counted = {name: train.get(class_id, 0) for class_id, name in names.items()}
+    empty = [name for name, n in counted.items() if not n]
+    present = [n for n in counted.values() if n]
+
+    # Which classes are missing matters far more than how many. An empty
+    # `weapon` is expected and harmless; an empty `person` is fatal, and saying
+    # "no examples for X" about both trains the reader to ignore the warning.
+    threats = [n for name, n in counted.items() if name in config.THREAT_CLASSES and n]
+    assets = [n for name, n in counted.items() if name in config.ASSET_CLASSES and n]
 
     print()
-    if missing:
-        print(f"!! No training examples for: {', '.join(missing)}")
-        print("!! Those classes cannot be learned, and any class the scorer")
-        print("!! treats as a threat being absent means zero alerts.")
-    elif present and max(present) / min(present) > 10:
-        print(f"!! Imbalance is {max(present) / min(present):.0f}:1 — the rarest")
-        print("!! class will likely be ignored. Lower --cap or add more of it.")
+    if not threats:
+        print("!! FATAL: no threat class has any training data.")
+        print("!! The scorer only ever alerts on " + "/".join(sorted(config.THREAT_CLASSES)))
+        print("!! — a rhino alone is wildlife, not poaching — so this dataset")
+        print("!! trains a model that cannot raise a single alert. Add a source")
+        print("!! supplying them; see training/DATASETS.md.")
+        return
+
+    if not assets:
+        print("!! FATAL: no " + "/".join(sorted(config.ASSET_CLASSES)) + " training data.")
+        print("!! Distances are measured in rhino body-lengths using the rhino")
+        print("!! in frame as the ruler, so without it nothing is measurable and")
+        print("!! every frame falls back to an unknown-proximity baseline.")
+        return
+
+    if empty:
+        print(f"Note: no examples for {', '.join(empty)} — declared but not learned.")
+        print("      Expected for `weapon`; see training/DATASETS.md for why.")
+
+    ratio = max(present) / min(present)
+    if ratio > 10:
+        print(f"!! Imbalance among trained classes is {ratio:.0f}:1 — the rarest")
+        print("!! will likely be ignored while mAP still looks fine.")
+        print("!! Lower --cap, or add more of the rare class.")
     else:
-        print("Balance looks usable.")
+        print(f"Balance looks usable ({ratio:.1f}:1 across trained classes).")
 
 
 def main() -> None:

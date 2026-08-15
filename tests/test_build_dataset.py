@@ -165,18 +165,42 @@ def test_selection_samples_across_the_source_not_just_the_head():
 
 # ── Reporting ────────────────────────────────────────────────────────────────
 
-NAMES = {0: "rhino", 1: "person", 2: "vehicle"}
+NAMES = {0: "rhino", 1: "person", 2: "vehicle", 3: "weapon"}
 
 
-def test_a_missing_class_is_called_out(capsys):
-    """The exact failure of the first training run: no threat classes at all."""
+def test_no_threat_class_is_fatal(capsys):
+    """The exact failure of the first training run: rhino-only data."""
     totals = {"train": Counter({0: 399}), "val": Counter({0: 85})}
 
     build_dataset.report(totals, NAMES)
     out = capsys.readouterr().out
 
-    assert "No training examples for: person, vehicle" in out
-    assert "zero alerts" in out
+    assert "FATAL" in out
+    assert "cannot raise a single alert" in out
+
+
+def test_no_rhino_is_fatal(capsys):
+    """Without the asset there is no ruler, so no distance is measurable."""
+    totals = {"train": Counter({1: 500, 2: 500}), "val": Counter()}
+
+    build_dataset.report(totals, NAMES)
+    out = capsys.readouterr().out
+
+    assert "FATAL" in out
+    assert "ruler" in out
+
+
+def test_an_empty_weapon_class_is_a_note_not_a_warning(capsys):
+    """Weapon has no usable public data; alarming about it every run would
+    teach the reader to ignore the genuinely fatal messages above."""
+    totals = {"train": Counter({0: 399, 1: 1500, 2: 1500}), "val": Counter()}
+
+    build_dataset.report(totals, NAMES)
+    out = capsys.readouterr().out
+
+    assert "FATAL" not in out
+    assert "no examples for weapon" in out
+    assert "Balance looks usable" in out
 
 
 def test_a_lopsided_split_is_called_out(capsys):
@@ -184,7 +208,7 @@ def test_a_lopsided_split_is_called_out(capsys):
 
     build_dataset.report(totals, NAMES)
 
-    assert "Imbalance is 50:1" in capsys.readouterr().out
+    assert "Imbalance among trained classes is 50:1" in capsys.readouterr().out
 
 
 def test_a_usable_split_is_reported_as_such(capsys):
