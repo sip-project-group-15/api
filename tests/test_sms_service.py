@@ -11,129 +11,119 @@ import pytest
 from app import config, sms_service
 
 
-def alert(seconds=1.5, severity="critical", separation=1.8, metres=6.7,
-          closing=0.55, factors=None):
+def alert(seconds=1.5, severity="critical", metres=6.7, closing=0.55,
+          track=1, label="person"):
     return {
         "timestamp_seconds": seconds,
         "severity": severity,
-        "separation_body_lengths": separation,
+        "separation_body_lengths": None if metres is None else metres / 3.7,
         "separation_metres_estimate": metres,
         "closing_rate": closing,
-        "context_factors": factors or [],
+        "context_factors": [],
+        "track_id": track,
+        "threat_label": label,
     }
 
 
-# ── Formatting ───────────────────────────────────────────────────────────────
+# ── Wording ─────────────────────────────────────────────────────────────────
+# The message goes to someone deciding whether to get up, not to someone tuning
+# thresholds. Scores, body-lengths and severity codes belong on the dashboard.
 
 
 def test_seconds_become_a_clock_a_ranger_can_scrub_to():
     assert sms_service.clock(0) == "0:00"
     assert sms_service.clock(9.4) == "0:09"
     assert sms_service.clock(75) == "1:15"
-    assert sms_service.clock(3661) == "61:01"
 
 
-def test_a_line_carries_time_severity_distance_and_speed():
-    line = sms_service.summarise(alert())
+def test_an_approach_is_described_as_one():
+    line = sms_service.describe_event([alert()])
 
-    assert "0:01" in line
-    assert "CRIT" in line
-    assert "1.8 lengths" in line
-    assert "7m" in line
-    assert "closing" in line
+    assert line == "Someone approaching a rhino, about 7m away"
 
 
-def test_a_stationary_threat_reports_no_closing_speed():
-    assert "closing" not in sms_service.summarise(alert(closing=0.0))
-    assert "closing" not in sms_service.summarise(alert(closing=None))
+def test_a_stationary_subject_is_not_described_as_approaching():
+    line = sms_service.describe_event([alert(closing=0.0)])
+
+    assert "approaching" not in line
+    assert "close to a rhino" in line
 
 
-def test_a_retreating_threat_reports_no_closing_speed():
-    """Negative is moving away; reporting it as a speed would read as a charge."""
-    assert "closing" not in sms_service.summarise(alert(closing=-0.4))
+def test_a_retreating_subject_is_not_described_as_approaching():
+    assert "approaching" not in sms_service.describe_event([alert(closing=-0.4)])
+
+
+def test_the_subject_is_named():
+    assert sms_service.describe_event([alert(label="vehicle")]).startswith("A vehicle")
+    assert sms_service.describe_event([alert(label="weapon")]).startswith("An armed person")
 
 
 def test_an_unmeasurable_distance_says_so_rather_than_inventing_one():
-    line = sms_service.summarise(alert(separation=None, metres=None))
+    line = sms_service.describe_event([alert(metres=None)])
 
-    assert "no rhino in view" in line
-    assert "body-lengths" not in line
+    assert "no rhino was in view" in line
+    assert "m away" not in line
 
 
-def test_context_factors_are_included():
-    line = sms_service.summarise(alert(factors=["vehicle present", "group of 4"]))
+def test_the_message_carries_no_internal_units_or_scores():
+    """Body-lengths are how the scorer measures, not something to act on."""
+    message = sms_service.build_alert_message("clip.mp4", [alert(), alert(metres=3.0)])
 
-    assert "vehicle present" in line
-    assert "group of 4" in line
+    for jargon in ("body-length", "lengths", "septet", "proximity", "persistence",
+                   "0.4", "score", "CRIT", "threshold"):
+        assert jargon not in message, jargon
+
+
+def test_the_message_says_what_to_do_next():
+    assert "dashboard" in sms_service.build_alert_message("clip.mp4", [alert()])
 
 
 # ── One message per clip ─────────────────────────────────────────────────────
 
 
-def test_every_alert_is_numbered_in_one_message():
-    message = sms_service.build_alert_message("clip.mp4", [alert(), alert(), alert()])
+def test_one_subject_across_many_frames_is_one_line():
+    """Five alerts from one approach are one event, not five."""
+    walk = [alert(seconds=t, metres=m, track=1)
+            for t, m in ((1.0, 8.7), (1.5, 7.6), (2.0, 5.4), (2.5, 4.3), (3.0, 3.1))]
 
-    assert message.count("\n") == 3          # header + three lines
-    assert "1. " in message and "2. " in message and "3. " in message
-    assert "3 alerts" in message
-    assert "clip.mp4" in message
+    message = sms_service.build_alert_message("clip.mp4", walk)
+
+    assert len([l for l in message.splitlines() if "rhino" in l]) == 1
+    assert "1." not in message           # nothing to number when there is one event
 
 
-def test_a_single_alert_is_not_pluralised():
-    message = sms_service.build_alert_message("clip.mp4", [alert()])
+def test_the_nearest_distance_of_the_event_is_the_one_reported():
+    walk = [alert(seconds=1.0, metres=20.0), alert(seconds=2.0, metres=4.0)]
 
-    assert "1 alert in" in message
-    assert "1 alerts" not in message
+    assert "about 4m away" in sms_service.build_alert_message("clip.mp4", walk)
+
+
+def test_separate_subjects_are_numbered():
+    message = sms_service.build_alert_message(
+        "clip.mp4", [alert(track=1), alert(track=2, label="vehicle")]
+    )
+
+    assert "1. " in message and "2. " in message
+
+
+def test_an_event_spanning_time_reports_a_range():
+    walk = [alert(seconds=1.0, track=1), alert(seconds=65.0, track=1)]
+
+    assert "(0:01-1:05)" in sms_service.build_alert_message("clip.mp4", walk)
 
 
 def test_no_alerts_still_produces_a_sane_message():
-    assert "no poaching alerts" in sms_service.build_alert_message("clip.mp4", [])
+    assert "nothing suspicious" in sms_service.build_alert_message("clip.mp4", [])
 
 
-def test_alerts_keep_their_order():
-    """Chronological, so the message reads as the event it describes."""
+def test_many_subjects_are_truncated_with_a_count():
     message = sms_service.build_alert_message(
-        "clip.mp4", [alert(seconds=1), alert(seconds=30), alert(seconds=90)]
+        "clip.mp4", [alert(seconds=float(i), track=i) for i in range(1, 12)]
     )
-    body = message.splitlines()
-
-    assert body[1].startswith("1. 0:01")
-    assert body[2].startswith("2. 0:30")
-    assert body[3].startswith("3. 1:30")
-
-
-def test_a_long_clip_is_truncated_rather_than_sent_as_ten_segments(monkeypatch):
-    """A truncated message that arrives beats a huge one that does not."""
-    monkeypatch.setattr(config, "SMS_MAX_SEPTETS", 300)
-
-    message = sms_service.build_alert_message("clip.mp4", [alert()] * 40)
-
-    assert len(message) <= 300
-    assert "more" in message.splitlines()[-1]
-
-
-def test_truncation_counts_every_alert_it_left_out(monkeypatch):
-    monkeypatch.setattr(config, "SMS_MAX_SEPTETS", 300)
-
-    message = sms_service.build_alert_message("clip.mp4", [alert()] * 40)
     listed = sum(1 for line in message.splitlines() if line[:1].isdigit())
-    dropped = int(message.splitlines()[-1].lstrip("+").split()[0])
+    dropped = int([l for l in message.splitlines() if l.startswith("+")][0].lstrip("+").split()[0])
 
-    assert listed + dropped == 40
-
-
-def test_a_realistic_clip_fits_in_one_segment():
-    """The whole point of the compact line format."""
-    alerts = [
-        alert(seconds=1.0, severity="high", separation=2.09, metres=7.7, closing=0.542),
-        alert(seconds=1.5, separation=1.81, metres=6.7, closing=0.546),
-        alert(seconds=2.0, separation=1.54, metres=5.7, closing=0.547),
-        alert(seconds=2.5, separation=1.27, metres=4.7, closing=0.546),
-        alert(seconds=3.0, separation=1.00, metres=3.7, closing=0.545),
-    ]
-
-    message = sms_service.build_alert_message("approach.mp4", alerts)
-
+    assert listed + dropped == 11
     assert sms_service.septets(message) <= 160
 
 
@@ -141,7 +131,7 @@ def test_an_overlong_filename_cannot_crowd_out_the_alerts():
     message = sms_service.build_alert_message("a" * 200 + ".mp4", [alert()])
 
     assert sms_service.septets(message) <= config.SMS_MAX_SEPTETS
-    assert "1. " in message
+    assert "rhino" in message
 
 
 # ── Sending ──────────────────────────────────────────────────────────────────
@@ -192,7 +182,7 @@ def test_the_provider_receives_one_message_for_all_alerts(monkeypatch):
     assert len(sent) == 1
     import json
     body = json.loads(sent[0].data)
-    assert "3 alerts" in body["message"]
+    assert "rhino" in body["message"]
     assert body["recipients"] == ["250780000000"]
 
 
@@ -218,8 +208,9 @@ def test_every_message_is_pure_basic_gsm7():
 
 
 def test_the_tilde_that_caused_it_is_gone():
-    """"~7m" needed a GSM-7 escape; it is now written plainly."""
-    assert "~" not in sms_service.summarise(alert())
+    """"(~7m)" needed a GSM-7 escape; it is now written as "about 7m"."""
+    assert "~" not in sms_service.describe_event([alert()])
+    assert "about" in sms_service.describe_event([alert()])
 
 
 def test_septets_counts_escapes_as_two():

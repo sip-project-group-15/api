@@ -95,6 +95,10 @@ def process_video(video_path: Path, threshold: float, alert_frames_folder: Path)
                     # reported separately as detection_confidence.
                     "probability": assessment["score"],
                     "label": "possible_poaching",
+                    # What was actually seen — person, vehicle or weapon. The
+                    # alert's own label says only that this is poaching-shaped;
+                    # anything written for a human needs the subject.
+                    "threat_label": assessment["label"],
                     "detections": detections,
                     "location": None,
                     "sms_sent": False,

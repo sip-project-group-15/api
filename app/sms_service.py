@@ -69,70 +69,90 @@ def clock(seconds: float) -> str:
     return f"{total // 60}:{total % 60:02d}"
 
 
-def summarise(alert: dict) -> str:
-    """One alert as a compact line.
+def group_events(alerts: list[dict]) -> list[list[dict]]:
+    """Collapse consecutive alerts about the same subject into one event.
 
-    Built from the structured fields rather than reusing `message`, which is
-    written for a screen and is far too long once several are stacked into a
-    160-character segment.
+    A person walking towards a rhino raises an alert on every analysed frame.
+    Those are one thing happening, not five, and a ranger who gets five lines
+    describing the same approach learns nothing the first line did not say.
     """
-    severity = {"critical": "CRIT", "high": "HIGH", "medium": "MED"}.get(
-        str(alert.get("severity", "")).lower(), "ALERT"
-    )
-    parts = [clock(alert.get("timestamp_seconds", 0)), severity]
+    events: list[list[dict]] = []
+    for alert in alerts:
+        track = alert.get("track_id")
+        if events and track is not None and events[-1][-1].get("track_id") == track:
+            events[-1].append(alert)
+        else:
+            events.append([alert])
 
-    separation = alert.get("separation_body_lengths")
-    if separation is None:
-        parts.append("no rhino in view")
-    else:
-        metres = alert.get("separation_metres_estimate")
-        parts.append(f"{separation:.1f} lengths {metres:.0f}m")
+    return events
 
-    rate = alert.get("closing_rate")
-    if rate and rate > 0:
-        parts.append("closing")
 
-    for factor in alert.get("context_factors") or []:
-        parts.append(factor)
+SUBJECTS = {"person": "Someone", "vehicle": "A vehicle", "weapon": "An armed person"}
 
-    return " ".join(parts)
+
+def describe_event(event: list[dict]) -> str:
+    """One event in the words a ranger would use.
+
+    Distance in metres, not body-lengths: the body-length figure is how the
+    scorer measures, not something anyone reading a text at night can act on.
+    """
+    subject = SUBJECTS.get(str(event[-1].get("threat_label", "")).lower(), "Someone")
+
+    metres = [a["separation_metres_estimate"] for a in event
+              if a.get("separation_metres_estimate") is not None]
+    closing = any((a.get("closing_rate") or 0) > 0 for a in event)
+
+    if not metres:
+        return f"{subject} was seen, but no rhino was in view"
+
+    nearest = min(metres)
+    verb = "approaching" if closing else "close to"
+
+    return f"{subject} {verb} a rhino, about {nearest:.0f}m away"
+
+
+def when(event: list[dict]) -> str:
+    """The moment in the clip, so the frame can be found."""
+    start = clock(event[0].get("timestamp_seconds", 0))
+    end = clock(event[-1].get("timestamp_seconds", 0))
+
+    return start if start == end else f"{start}-{end}"
 
 
 def build_alert_message(video_name: str, alerts: list[dict]) -> str:
-    """One SMS for the whole clip, with every alert numbered.
+    """One plain-language SMS for the whole clip.
 
-    A message per alert would mean five texts for a single approach — the same
-    subject, seconds apart — which costs money and buries the signal. One
-    message, ordered by time, reads as the event it actually is.
+    Written for someone deciding whether to get up, not for someone tuning
+    thresholds. No scores, no body-lengths, no severity codes — those are all
+    on the dashboard, and the message says to go there.
 
-    The body is capped at SMS_MAX_SEPTETS and the remainder counted rather than
-    sent. That default is one segment, deliberately: a message longer than 160
-    septets is split into a concatenated SMS, which needs a header and a bit of
-    septet padding to stay aligned. Get that wrong and the whole thing arrives
-    as GSM-7 mojibake — Greek letters and a run of '@' — which is exactly what
-    this provider does with multi-segment messages. One segment always
-    survives; the dashboard has the rest.
+    Capped at one GSM-7 segment. Past 160 septets an SMS is split into a
+    concatenated message needing a header and septet padding to stay aligned;
+    this provider gets that wrong and the whole thing arrives as mojibake, with
+    no error on the sending side.
     """
     if not alerts:
-        return to_gsm7(f"Kifaru: no poaching alerts in {video_name}")
+        return to_gsm7(f"Kifaru: nothing suspicious in {video_name[:30]}")
 
-    plural = "s" if len(alerts) > 1 else ""
-    header = to_gsm7(f"Kifaru: {len(alerts)} alert{plural} in {video_name[:24]}")
+    events = group_events(alerts)
+    header = to_gsm7(f"KIFARU ALERT - {video_name[:24]}")
+    footer = "Check the dashboard."
 
     lines = []
-    for index, alert in enumerate(alerts, start=1):
-        line = to_gsm7(f"{index}. {summarise(alert)}")
-        remaining = len(alerts) - index
-
-        # Leave room for the "+N more" tail before committing to this line.
+    for index, event in enumerate(events, start=1):
+        prefix = f"{index}. " if len(events) > 1 else ""
+        line = to_gsm7(f"{prefix}{describe_event(event)} ({when(event)})")
+        remaining = len(events) - index
         tail = f"\n+{remaining} more" if remaining else ""
-        candidate = "\n".join([header, *lines, line]) + tail
+        candidate = "\n".join([header, *lines, line, footer]) + tail
+
         if septets(candidate) > config.SMS_MAX_SEPTETS:
-            return "\n".join([header, *lines, f"+{len(alerts) - index + 1} more"])
+            dropped = len(events) - index + 1
+            return "\n".join([header, *lines, f"+{dropped} more", footer])
 
         lines.append(line)
 
-    return "\n".join([header, *lines])
+    return "\n".join([header, *lines, footer])
 
 
 def send_alert_sms(video_name: str, alerts: list[dict]) -> dict:
