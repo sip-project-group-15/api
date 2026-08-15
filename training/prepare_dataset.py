@@ -80,7 +80,11 @@ def main() -> None:
 
     print(f"\n{total} frames -> {args.output}")
     print("Next: upload for annotation, then place YOLO labels in datasets/poaching/")
-    print("Classes must match app/config.py — 0=rhino, 1=person, 2=vehicle")
+    # Order must match config.CLASS_NAMES exactly, and is append-only: renumbering
+    # a class silently relabels every box in every previously trained model.
+    print("Classes must match app/config.py — 0=rhino, 1=person, 2=vehicle, 3=weapon")
+    print("Weapon labels are optional — the scorer treats them as an escalator,")
+    print("never as a requirement, so a model trained without them still works.")
 
 
 if __name__ == "__main__":

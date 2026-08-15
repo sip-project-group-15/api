@@ -16,3 +16,8 @@ training/
 datasets/
 *.pt
 *.ipynb
+
+# Local smoke-test weights exported from stock COCO. They know nothing about
+# rhinos and are never what the server should load, so keep them out of the
+# image rather than shipping ~10MB of dead weight beside the real model.
+models/baseline-*.onnx

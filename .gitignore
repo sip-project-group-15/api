@@ -1,4 +1,5 @@
 venv/
+.venv/
 uploads/
 __pycache__/
 *.py[cod]
@@ -14,3 +15,8 @@ training/runs/
 # Exported weights are the exception: models/best.onnx ships in the image and
 # must be committed.
 !models/*.onnx
+
+# ...but not a baseline exported from stock COCO weights. That is a local
+# smoke-test aid that knows nothing about rhinos, and committing it would let
+# CI deploy it as if it were the trained model.
+models/baseline-*.onnx
