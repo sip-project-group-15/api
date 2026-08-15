@@ -1,18 +1,27 @@
 """Export a trained checkpoint to the ONNX file the API serves.
 
-The notebook does this too, but keeping it as a script means a re-export never
-requires a GPU session — useful when only the opset or image size changes.
+This is the *only* place the export happens — the training notebook calls this
+script rather than carrying its own copy, so the opset, image size and
+verification cannot drift between the two.
 
     python training/export_onnx.py runs/kifaru-v1/weights/best.pt
 
-Verifies the result loads under onnxruntime before overwriting models/best.onnx,
-so a broken export cannot reach a deploy.
+Training updates the `.pt` checkpoint; ONNX is a one-way build artifact frozen
+from it for serving. Keep `best.pt` safe — a re-export needs it, and nothing
+can recover it from the `.onnx`.
+
+Verifies the result loads under onnxruntime *and* that the server can parse its
+output layout, before overwriting models/best.onnx, so a broken export cannot
+reach a deploy.
 """
 
 import argparse
+import ast
 import shutil
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 DEFAULT_DESTINATION = Path("models/best.onnx")
 
@@ -33,14 +42,36 @@ def export(checkpoint: Path, destination: Path, imgsz: int, opset: int) -> Path:
     return destination
 
 
-def verify(onnx_path: Path, imgsz: int) -> None:
-    """Load through onnxruntime exactly as the server does.
+def class_count(session) -> int:
+    """How many classes the graph was trained on, per its embedded metadata."""
+    raw = (session.get_modelmeta().custom_metadata_map or {}).get("names")
+    try:
+        return len(ast.literal_eval(raw))
+    except (ValueError, SyntaxError, TypeError):
+        from app import config
 
-    Ultralytics can emit a graph it is happy with but onnxruntime rejects; far
-    better to fail here than during a deploy.
+        return len(config.CLASS_NAMES)
+
+
+def verify(onnx_path: Path, imgsz: int) -> None:
+    """Load through onnxruntime exactly as the server does, and parse its output.
+
+    Two distinct failures are caught here. Ultralytics can emit a graph it is
+    happy with but onnxruntime rejects — better to fail now than during a
+    deploy. And the graph may use an output layout the server cannot read: YOLO
+    exports come in an end-to-end form with NMS baked in, `(1, N, 6)`, and a
+    classic form, `(1, 4 + classes, N)`. Handing one to the other's parser does
+    not raise, it silently yields nonsense boxes, so this asserts the server
+    recognises what it is about to be given.
+
+    The check reuses app.detector's own predicate deliberately: a copy of that
+    rule here could agree with the server today and disagree after any edit,
+    which would make this verification worse than none at all.
     """
     import numpy as np
     import onnxruntime as ort
+
+    from app.detector import is_end_to_end
 
     session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     input_meta = session.get_inputs()[0]
@@ -52,6 +83,26 @@ def verify(onnx_path: Path, imgsz: int) -> None:
     print(f"  input   {input_meta.name} {input_meta.shape}")
     print(f"  output  {output.shape}")
     print(f"  classes {metadata.get('names', '(none embedded)')}")
+
+    if output.ndim != 3:
+        sys.exit(f"\nUnusable output {output.shape}: expected a batched 3-D tensor.")
+
+    classes = class_count(session)
+    rows = np.squeeze(output, axis=0)
+
+    if is_end_to_end(rows, classes):
+        print(f"  layout  end-to-end — {rows.shape[0]} slots of "
+              "[x1, y1, x2, y2, score, class], NMS inside the graph")
+    elif rows.shape[0] == 4 + classes:
+        print(f"  layout  classic — {rows.shape[1]} candidate boxes of "
+              f"4 coords + {classes} class scores, server runs NMS")
+    else:
+        sys.exit(
+            f"\nUnrecognised output layout {output.shape} for {classes} classes.\n"
+            f"Expected (1, N, 6) end-to-end or (1, {4 + classes}, N) classic.\n"
+            "app/detector.py cannot parse this — it would produce silently wrong\n"
+            "boxes rather than an error, so this export is not deployable."
+        )
 
 
 def main() -> None:

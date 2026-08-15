@@ -19,6 +19,135 @@ from app import config
 logger = logging.getLogger(__name__)
 
 
+def resolve_label(label: str) -> str:
+    """Map a model's label onto the project's class vocabulary."""
+    return config.LABEL_ALIASES.get(label, label)
+
+
+EMPTY = (np.empty((0, 4), np.float32), np.empty((0,), np.float32), np.empty((0,), int))
+
+
+def is_end_to_end(outputs: np.ndarray, num_classes: int) -> bool:
+    """Whether the graph has NMS baked in and emits finished detections.
+
+    Two layouts reach us. The classic YOLO head emits (4 + num_classes, boxes)
+    — centre-x/centre-y/width/height plus per-class scores — leaving the
+    confidence filter and non-max suppression to be done here. Newer
+    end-to-end exports, YOLO26 among them, do both inside the graph and emit
+    (detections, 6) rows of x1/y1/x2/y2/score/class instead.
+
+    This is decided on shape before any value is read, because handing one
+    layout to the other's parser does not raise — it silently yields nonsense
+    boxes, which is far harder to notice than a crash.
+    """
+    return (
+        outputs.ndim == 2
+        and outputs.shape[1] == 6
+        and outputs.shape[0] != 4 + num_classes
+    )
+
+
+def parse_end_to_end(rows: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read finished detections; only the confidence filter is left to apply.
+
+    Rows are already suppressed and sorted by score, and the tail is zero
+    padding up to the graph's fixed detection count.
+    """
+    kept = rows[rows[:, 4] >= config.MODEL_CONF_THRESHOLD]
+    if not len(kept):
+        return EMPTY
+
+    return kept[:, :4], kept[:, 4], kept[:, 5].astype(int)
+
+
+def parse_raw(predictions: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Classic head: pick the best class per box, then suppress overlaps."""
+    import cv2
+
+    # (4 + num_classes, boxes) -> (boxes, 4 + num_classes)
+    predictions = predictions.T
+    if predictions.shape[1] < 5:
+        return EMPTY
+
+    class_scores = predictions[:, 4:]
+    class_ids = class_scores.argmax(axis=1)
+    confidences = class_scores.max(axis=1)
+
+    keep = confidences >= config.MODEL_CONF_THRESHOLD
+    if not keep.any():
+        return EMPTY
+
+    boxes_xywh = predictions[keep, :4]
+    class_ids = class_ids[keep]
+    confidences = confidences[keep]
+
+    centre_x, centre_y = boxes_xywh[:, 0], boxes_xywh[:, 1]
+    box_w, box_h = boxes_xywh[:, 2], boxes_xywh[:, 3]
+    left, top = centre_x - box_w / 2, centre_y - box_h / 2
+
+    # Suppression happens in letterboxed space; the transform back to frame
+    # coordinates is a uniform scale, so it cannot change which boxes overlap.
+    indices = cv2.dnn.NMSBoxes(
+        np.stack([left, top, box_w, box_h], axis=1).tolist(),
+        confidences.tolist(),
+        config.MODEL_CONF_THRESHOLD,
+        config.MODEL_IOU_THRESHOLD,
+    )
+    if len(indices) == 0:
+        return EMPTY
+
+    chosen = np.array(indices).flatten()
+    boxes_xyxy = np.stack([left, top, left + box_w, top + box_h], axis=1)
+
+    return boxes_xyxy[chosen], confidences[chosen], class_ids[chosen]
+
+
+def to_detections(
+    boxes_xyxy: np.ndarray,
+    confidences: np.ndarray,
+    class_ids: np.ndarray,
+    class_names: list[str],
+    scale: float,
+    pad_x: int,
+    pad_y: int,
+    frame_shape: tuple,
+) -> list[dict]:
+    """Undo the letterbox, clamp to the frame, and label.
+
+    Clamping matters more here than it looks: the geometry layer reads a box's
+    bottom edge as the subject's contact point with the ground, so a box
+    running off the bottom of the frame would be scored as standing closer
+    than it really is.
+    """
+    frame_h, frame_w = frame_shape[:2]
+    detections = []
+
+    for (x1, y1, x2, y2), confidence, class_id in zip(
+        boxes_xyxy, confidences, class_ids
+    ):
+        left = min(max(0.0, (x1 - pad_x) / scale), frame_w)
+        top = min(max(0.0, (y1 - pad_y) / scale), frame_h)
+        right = min(max(0.0, (x2 - pad_x) / scale), frame_w)
+        bottom = min(max(0.0, (y2 - pad_y) / scale), frame_h)
+
+        if right <= left or bottom <= top:
+            continue
+
+        class_id = int(class_id)
+        label = (
+            class_names[class_id] if class_id < len(class_names) else str(class_id)
+        )
+        detections.append(
+            {
+                "label": resolve_label(label),
+                "confidence": round(float(confidence), 4),
+                "box": [int(left), int(top), int(right - left), int(bottom - top)],
+            }
+        )
+
+    return detections
+
+
 class Detector(Protocol):
     """Common surface so callers never branch on which backend is active."""
 
@@ -112,8 +241,6 @@ class YoloOnnxDetector:
         return canvas, scale, pad_x, pad_y
 
     def predict(self, frame: np.ndarray, frame_number: int) -> list[dict]:
-        import cv2
-
         canvas, scale, pad_x, pad_y = self._letterbox(frame)
 
         # BGR->RGB, HWC->CHW, 0-1 normalised, batched.
@@ -121,67 +248,23 @@ class YoloOnnxDetector:
         blob = np.expand_dims(blob, axis=0)
 
         outputs = self.session.run(None, {self.input_name: blob})[0]
+        outputs = np.squeeze(outputs, axis=0)
 
-        # (1, 4 + num_classes, num_boxes) -> (num_boxes, 4 + num_classes)
-        predictions = np.squeeze(outputs, axis=0).T
-        if predictions.shape[1] < 5:
-            return []
+        if is_end_to_end(outputs, len(self.class_names)):
+            boxes, confidences, class_ids = parse_end_to_end(outputs)
+        else:
+            boxes, confidences, class_ids = parse_raw(outputs)
 
-        class_scores = predictions[:, 4:]
-        class_ids = class_scores.argmax(axis=1)
-        confidences = class_scores.max(axis=1)
-
-        keep = confidences >= config.MODEL_CONF_THRESHOLD
-        if not keep.any():
-            return []
-
-        boxes_xywh = predictions[keep, :4]
-        class_ids = class_ids[keep]
-        confidences = confidences[keep]
-
-        # Model emits centre-x/centre-y/w/h in letterboxed space; convert to
-        # top-left xywh in original-frame coordinates.
-        centre_x, centre_y = boxes_xywh[:, 0], boxes_xywh[:, 1]
-        box_w, box_h = boxes_xywh[:, 2], boxes_xywh[:, 3]
-        left = (centre_x - box_w / 2 - pad_x) / scale
-        top = (centre_y - box_h / 2 - pad_y) / scale
-        width = box_w / scale
-        height = box_h / scale
-
-        boxes = np.stack([left, top, width, height], axis=1)
-
-        indices = cv2.dnn.NMSBoxes(
-            boxes.tolist(),
-            confidences.tolist(),
-            config.MODEL_CONF_THRESHOLD,
-            config.MODEL_IOU_THRESHOLD,
+        return to_detections(
+            boxes,
+            confidences,
+            class_ids,
+            self.class_names,
+            scale,
+            pad_x,
+            pad_y,
+            frame.shape,
         )
-        if len(indices) == 0:
-            return []
-
-        frame_h, frame_w = frame.shape[:2]
-        detections = []
-        for index in np.array(indices).flatten():
-            x, y, w, h = boxes[index]
-            class_id = int(class_ids[index])
-            label = (
-                self.class_names[class_id]
-                if class_id < len(self.class_names)
-                else str(class_id)
-            )
-            detections.append(
-                {
-                    "label": label,
-                    "confidence": round(float(confidences[index]), 4),
-                    "box": [
-                        max(0, int(x)),
-                        max(0, int(y)),
-                        min(frame_w, int(w)),
-                        min(frame_h, int(h)),
-                    ],
-                }
-            )
-        return detections
 
 
 _detector: Detector | None = None
