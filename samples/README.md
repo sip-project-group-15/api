@@ -20,6 +20,7 @@ python training/check_model.py samples/rhino.jpg
 | `rhino-pair.jpg` | a cow and her calf | two `rhino` boxes ~0.98 / ~0.92 — **no alert**, wildlife alone is not poaching |
 | `tourists-vehicle.jpg` | a game-drive truck and a guide | `person` ~0.98, `vehicle` ~0.94 |
 | `approach.mp4` | a person walking towards a rhino | alerts escalating **medium → high → critical**, closing rate positive |
+| `keepers-and-rhino.mp4` | **real footage** — keepers walking beside a white rhino | `critical` 0.786 on 1 of 5 analysed frames |
 | `patrol.mp4` | a slow pan over the game-drive scene | scores 0.21–0.26, **all under the 0.45 threshold** |
 
 `patrol.mp4` is the one worth understanding. It is a **hard negative**: people
@@ -30,6 +31,19 @@ alert, and this is the clip that proves it still doesn't.
 
 `approach.mp4` exercises the whole chain — detection, tracking across frames,
 distance in body-lengths, the closing rate, and the severity escalation.
+
+`keepers-and-rhino.mp4` is the only sample here that is **real footage of a
+person beside a rhino**, and it is worth understanding precisely. The proximity
+call is right — a person really is about 2.8m from the animal, and `critical` is
+the correct band. But the men are the rhino's own Samburu keepers, not poachers.
+The system is behaving exactly as designed, flagging a human at touching
+distance and leaving intent to whoever reads the alert; do not present it as
+"detected a poacher".
+
+It also shows how thin real co-occurrence footage is. Across the source video,
+a rhino and a person appear together in 20 frames out of 160 in that shot, and
+1 of 255 sampled across the whole clip — so only one analysed frame alerts. The
+flicker is the model's 0.42 person recall, not a bug in the sampling.
 
 > **`approach.mp4` is composited, not real footage.** A person cut from
 > `tourists-vehicle.jpg` is pasted into the `rhino.jpg` scene at decreasing
@@ -60,6 +74,11 @@ Bedford game drive truck, Pilanesberg National Park, South Africa — by
 [CC BY 2.0](https://creativecommons.org/licenses/by/2.0/).
 [source](https://commons.wikimedia.org/wiki/File:Bedford_game_drive_truck,_Pilanesberg_National_Park,_South_Africa_-_001.jpg)
 
+**`keepers-and-rhino.mp4`**
+A 2.3-second cut from *Rhino Joins Tinder*, **public domain** (Voice of America
+/ Africa54), via Wikimedia Commons. Filmed at Ol Pejeta Conservancy, Kenya.
+[source](https://commons.wikimedia.org/wiki/File:Rhino_Joins_Tinder.webm)
+
 **`approach.mp4`** and **`patrol.mp4`** are derived from the stills above and
 inherit their licences — CC BY-SA 4.0 and CC BY 2.0 respectively.
 
@@ -67,7 +86,15 @@ Images were downscaled to 1280px wide and re-encoded; otherwise unmodified.
 
 ## What is missing
 
-There is no aerial sample, because the model has no aerial rhino training data
-and would not detect one from above. When drone footage exists, a clip of a
-person approaching a rhino **from the air** is the sample that would actually
-test the deployment case.
+There is no aerial sample, and it is not for want of looking. Wikimedia Commons
+carries the supplementary video from an actual [rhino anti-poaching RPAS
+study](https://commons.wikimedia.org/wiki/File:Remotely-Piloted-Aircraft-Systems-as-a-Rhinoceros-Anti-Poaching-Tool-in-Africa-pone.0083873.s001.ogv)
+— precisely the deployment case. Run through this model it produces **zero
+detections across 83 sampled frames**: no rhinos, no people. There is no point
+shipping a sample whose only lesson is that the model is blind to it.
+
+When drone footage exists, a clip of a person approaching a rhino **from the
+air** is the sample that would actually test what this system is for.
+
+Watermarked stock footage must not be added here — it cannot be redistributed
+with a public repo. `samples/gettyimages-*` is gitignored for that reason.

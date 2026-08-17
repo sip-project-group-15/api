@@ -20,3 +20,5 @@ training/runs/
 # smoke-test aid that knows nothing about rhinos, and committing it would let
 # CI deploy it as if it were the trained model.
 models/baseline-*.onnx
+# Watermarked stock footage cannot be redistributed with a public repo.
+samples/gettyimages-*
