@@ -88,6 +88,44 @@ def persistence(streak: int) -> float:
     return min(1.0, streak / config.PERSISTENCE_SATURATION)
 
 
+def combine(
+    proximity_score: float,
+    approach_score: float,
+    context_score: float,
+    persistence_score: float,
+    approach_measured: bool,
+) -> float:
+    """Weighted sum over the terms that could actually be measured.
+
+    A term that is zero because it *was measured* as zero is evidence: we
+    watched, and nobody moved closer. A term that is zero because it could not
+    be measured is not evidence of anything, and letting it drag the total down
+    scores uncertainty as innocence.
+
+    That distinction matters most for a still image, where approach is
+    structurally unmeasurable. Counting its 0.30 weight as a zero caps any
+    single frame at 0.625 — a photo could never be `critical` however damning
+    it was — and meant a still only cleared the threshold with a threat inside
+    two body-lengths, leaving everything from 7m to 45m unreachable.
+
+    So an unmeasurable term is dropped and its weight redistributed over the
+    rest. A person 13m from a rhino scores 0.52 from one frame instead of 0.36,
+    while a person filmed for eight frames and measured as stationary still
+    scores the lower number — which is the right way round.
+    """
+    terms = [
+        (config.PROXIMITY_WEIGHT, proximity_score),
+        (config.CONTEXT_WEIGHT, context_score),
+        (config.PERSISTENCE_WEIGHT, persistence_score),
+    ]
+    if approach_measured:
+        terms.append((config.APPROACH_WEIGHT, approach_score))
+
+    total = sum(weight for weight, _ in terms)
+
+    return sum(weight * value for weight, value in terms) / total
+
+
 def severity(score: float) -> str:
     for limit, name in config.SEVERITY_BANDS:
         if score >= limit:
@@ -168,11 +206,12 @@ class ThreatMonitor:
 
             proximity_score, band = geometry.proximity(gap)
             approach_score = approach(rate)
-            score = (
-                config.PROXIMITY_WEIGHT * proximity_score
-                + config.APPROACH_WEIGHT * approach_score
-                + config.CONTEXT_WEIGHT * context_score
-                + config.PERSISTENCE_WEIGHT * persistence_score
+            score = combine(
+                proximity_score,
+                approach_score,
+                context_score,
+                persistence_score,
+                approach_measured=rate is not None,
             )
 
             candidate = {
@@ -187,6 +226,10 @@ class ThreatMonitor:
                 ),
                 "proximity_band": band,
                 "closing_rate": None if rate is None else round(rate, 3),
+                # False means approach could not be measured yet and its weight
+                # was redistributed — not that the subject was standing still.
+                # Anything displaying the components has to tell those apart.
+                "approach_measured": rate is not None,
                 "components": {
                     "proximity": round(proximity_score, 3),
                     "approach": round(approach_score, 3),

@@ -249,3 +249,64 @@ def test_a_distant_bystander_does_not_alert():
     assessment = run([[RHINO, person_at(15.0)]] * 6)
 
     assert assessment["score"] < config.DEFAULT_ALERT_THRESHOLD
+
+
+# ── Unmeasurable terms ───────────────────────────────────────────────────────
+# Approach needs three samples. Counting its 0.30 weight as a zero before then
+# scores uncertainty as innocence, and caps a still image below `critical`.
+
+
+def test_an_unmeasured_approach_does_not_drag_the_score_down():
+    """A single frame of someone 13m from a rhino — the reported case."""
+    single = run([[RHINO, person_at(3.4)]])
+
+    assert single["approach_measured"] is False
+    assert single["score"] >= config.DEFAULT_ALERT_THRESHOLD
+
+
+def test_measured_stillness_scores_lower_than_unmeasured():
+    """Watching and seeing nobody move is evidence; not knowing is not."""
+    unknown = run([[RHINO, person_at(3.0)]])
+    measured = run([[RHINO, person_at(3.0)]] * 5)
+
+    assert unknown["approach_measured"] is False
+    assert measured["approach_measured"] is True
+    assert measured["components"]["approach"] == 0.0
+    assert measured["score"] < unknown["score"]
+
+
+def test_a_still_image_can_reach_critical():
+    """Previously impossible: one frame capped at 0.625 whatever it showed."""
+    frame = run([[RHINO, person_at(0.5), person_at(0.7), person_at(0.9),
+                  {"label": "weapon", "confidence": 0.6, "box": [0, 0, 9, 9]}]])
+
+    assert frame["severity"] == "critical"
+
+
+def test_a_still_image_alerts_beyond_charging_distance():
+    """The old weighting only cleared the threshold inside 2 body-lengths."""
+    for gap in (1.0, 3.0, 4.5):
+        frame = run([[RHINO, person_at(gap)]])
+        assert frame["score"] >= config.DEFAULT_ALERT_THRESHOLD, f"{gap} body-lengths"
+
+
+def test_a_distant_bystander_still_does_not_alert_from_one_frame():
+    """Redistribution must not turn every lone frame into an alert."""
+    assert run([[RHINO, person_at(15.0)]])["score"] < config.DEFAULT_ALERT_THRESHOLD
+
+
+def test_a_person_with_no_rhino_still_does_not_alert_from_one_frame():
+    assert run([[person_at(0)]])["score"] < config.DEFAULT_ALERT_THRESHOLD
+
+
+def test_weights_are_renormalised_not_merely_dropped():
+    """The remaining terms must still sum to 1, or scores shrink instead."""
+    maxed = threat.combine(1.0, 0.0, 1.0, 1.0, approach_measured=False)
+
+    assert maxed == pytest.approx(1.0)
+
+
+def test_a_measured_approach_uses_the_full_weighting():
+    both = threat.combine(1.0, 1.0, 1.0, 1.0, approach_measured=True)
+
+    assert both == pytest.approx(1.0)
