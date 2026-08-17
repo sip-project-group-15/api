@@ -98,12 +98,21 @@ RHINO_BODY_LENGTH_M = env_float("RHINO_BODY_LENGTH_M", 3.7)
 # pixels would swing the estimate wildly.
 MIN_RULER_PIXELS = env_int("MIN_RULER_PIXELS", 12)
 
-# (upper bound in body-lengths, score, band name), nearest first. Bands rather
-# than a curve because the underlying estimate is only good to about ±40%.
-PROXIMITY_BANDS = (
-    (2.0, 1.0, "critical"),   # ~7m — well inside charging distance
-    (5.0, 0.75, "high"),      # ~20m
-    (12.0, 0.4, "medium"),    # ~45m
+# (upper bound in METRES, score, band name), nearest first. Metres because the
+# policy is stated in metres — anything within 50m of a rhino is flagged — and
+# a band table in body-lengths hides whether that policy is actually met.
+#
+# The scores are high and closely spaced on purpose. Every band inside the
+# outer bound has to clear DEFAULT_ALERT_THRESHOLD on proximity alone, even
+# for a subject watched and measured as stationary. The gradation that remains
+# is for triage, not for deciding whether to alert at all.
+#
+# Bands rather than a curve because the underlying estimate is only good to
+# about ±40%: a rhino seen head-on measures short.
+PROXIMITY_BANDS_M = (
+    (7.0, 1.00, "critical"),   # inside charging distance
+    (20.0, 0.92, "high"),
+    (50.0, 0.85, "medium"),    # the outer edge of "worth waking someone for"
 )
 
 # Scored when a threat is present but no rhino is measurable. Not zero: a human

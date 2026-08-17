@@ -94,6 +94,7 @@ def combine(
     context_score: float,
     persistence_score: float,
     approach_measured: bool,
+    distance_known: bool = True,
 ) -> float:
     """Weighted sum over the terms that could actually be measured.
 
@@ -112,13 +113,20 @@ def combine(
     rest. A person 13m from a rhino scores 0.52 from one frame instead of 0.36,
     while a person filmed for eight frames and measured as stationary still
     scores the lower number — which is the right way round.
+
+    Redistribution requires a real distance to redistribute *onto*. With no
+    rhino in frame, approach can never be measured however long the clip runs,
+    and proximity is already only a baseline guess; shifting approach's weight
+    onto that guess compounds one assumption with another and inflates every
+    frame of, say, tourists beside a vehicle. So when the distance is unknown
+    the full weighting stands and approach simply contributes nothing.
     """
     terms = [
         (config.PROXIMITY_WEIGHT, proximity_score),
         (config.CONTEXT_WEIGHT, context_score),
         (config.PERSISTENCE_WEIGHT, persistence_score),
     ]
-    if approach_measured:
+    if approach_measured or not distance_known:
         terms.append((config.APPROACH_WEIGHT, approach_score))
 
     total = sum(weight for weight, _ in terms)
@@ -212,6 +220,7 @@ class ThreatMonitor:
                 context_score,
                 persistence_score,
                 approach_measured=rate is not None,
+                distance_known=gap is not None,
             )
 
             candidate = {
@@ -230,6 +239,7 @@ class ThreatMonitor:
                 # was redistributed — not that the subject was standing still.
                 # Anything displaying the components has to tell those apart.
                 "approach_measured": rate is not None,
+                "distance_known": gap is not None,
                 "components": {
                     "proximity": round(proximity_score, 3),
                     "approach": round(approach_score, 3),

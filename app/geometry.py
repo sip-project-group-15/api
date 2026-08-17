@@ -81,8 +81,9 @@ def proximity(gap: float | None) -> tuple[float, str | None]:
     if gap is None:
         return config.UNKNOWN_PROXIMITY, None
 
-    for limit, score, band in config.PROXIMITY_BANDS:
-        if gap < limit:
+    metres = gap * config.RHINO_BODY_LENGTH_M
+    for limit, score, band in config.PROXIMITY_BANDS_M:
+        if metres < limit:
             return score, band
 
     return 0.0, None

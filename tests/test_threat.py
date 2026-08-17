@@ -310,3 +310,57 @@ def test_a_measured_approach_uses_the_full_weighting():
     both = threat.combine(1.0, 1.0, 1.0, 1.0, approach_measured=True)
 
     assert both == pytest.approx(1.0)
+
+
+# ── The 50m policy ───────────────────────────────────────────────────────────
+# Anything within 50m of a rhino is flagged, whether or not it is moving. The
+# bands still grade severity for triage; they no longer decide whether to alert.
+
+
+def metres_away(metres):
+    gap = metres / config.RHINO_BODY_LENGTH_M
+    return person_at(gap)
+
+
+def test_everything_within_fifty_metres_alerts_from_one_frame():
+    for metres in (3, 10, 19, 25, 40, 49):
+        score = run([[RHINO, metres_away(metres)]])["score"]
+        assert score >= config.DEFAULT_ALERT_THRESHOLD, f"{metres}m scored {score:.3f}"
+
+
+def test_everything_within_fifty_metres_alerts_even_when_stationary():
+    """Measured as not moving is still worth flagging inside 50m."""
+    for metres in (3, 19, 40, 49):
+        watched = run([[RHINO, metres_away(metres)]] * 6)
+        assert watched["components"]["approach"] == 0.0
+        assert watched["score"] >= config.DEFAULT_ALERT_THRESHOLD, metres
+
+
+def test_beyond_fifty_metres_stays_silent():
+    for metres in (55, 80, 150):
+        assert run([[RHINO, metres_away(metres)]])["score"] < config.DEFAULT_ALERT_THRESHOLD
+
+
+def test_closer_still_outranks_further():
+    """Grading survives the policy — the bands are for triage now."""
+    near = run([[RHINO, metres_away(4)]])["score"]
+    mid = run([[RHINO, metres_away(15)]])["score"]
+    far = run([[RHINO, metres_away(40)]])["score"]
+
+    assert near > mid > far
+
+
+def test_tourists_with_a_vehicle_and_no_rhino_stay_silent():
+    """The hard negative. With no rhino there is no distance to redistribute
+    onto, so approach's weight must not inflate an already-guessed proximity."""
+    vehicle = {"label": "vehicle", "confidence": 0.8, "box": [900, 0, 80, 40]}
+    crowd = [person_at(3.0), person_at(4.0), person_at(5.0), vehicle]
+
+    assert run([crowd] * 8)["score"] < config.DEFAULT_ALERT_THRESHOLD
+
+
+def test_an_unknown_distance_does_not_trigger_redistribution():
+    known = threat.combine(0.85, 0.0, 0.0, 1.0, approach_measured=False, distance_known=True)
+    unknown = threat.combine(0.85, 0.0, 0.0, 1.0, approach_measured=False, distance_known=False)
+
+    assert known > unknown

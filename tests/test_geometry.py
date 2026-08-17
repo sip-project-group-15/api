@@ -76,9 +76,24 @@ def test_proximity_bands_decrease_with_distance():
 
 
 def test_proximity_names_the_band():
-    assert geometry.proximity(1.0)[1] == "critical"
-    assert geometry.proximity(3.0)[1] == "high"
-    assert geometry.proximity(8.0)[1] == "medium"
+    """Bands are defined in metres; these gaps are body-lengths (3.7m each)."""
+    assert geometry.proximity(1.0)[1] == "critical"   # ~4m
+    assert geometry.proximity(3.0)[1] == "high"       # ~11m
+    assert geometry.proximity(8.0)[1] == "medium"     # ~30m
+
+
+def test_anything_within_fifty_metres_is_banded():
+    """The stated policy: a threat inside 50m of a rhino is worth flagging."""
+    for metres in (1, 6, 7, 19, 21, 45, 49):
+        score, band = geometry.proximity(metres / config.RHINO_BODY_LENGTH_M)
+        assert band is not None, f"{metres}m fell outside every band"
+        assert score > 0, f"{metres}m scored zero"
+
+
+def test_beyond_fifty_metres_scores_nothing():
+    for metres in (51, 60, 120):
+        score, band = geometry.proximity(metres / config.RHINO_BODY_LENGTH_M)
+        assert (score, band) == (0.0, None), f"{metres}m still scored"
 
 
 def test_unmeasurable_proximity_is_a_baseline_not_zero():
